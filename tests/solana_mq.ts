@@ -13,6 +13,7 @@ describe("solana_mq", () => {
     // Generate a random keypair for the user
     const userKeypair = anchor.web3.Keypair.generate();
     const user = userKeypair.publicKey;
+    const topicName = "MyTestTopic";
 
     // Airdrop SOL to the new user
     const airdropSignature = await provider.connection.requestAirdrop(
@@ -20,14 +21,18 @@ describe("solana_mq", () => {
       anchor.web3.LAMPORTS_PER_SOL // 1 SOL
     );
 
-    // Confirm the airdrop using the new TransactionConfirmationStrategy
-    await provider.connection.confirmTransaction(
-      airdropSignature, // Pass the signature directly
-      "confirmed" // Specify the commitment level here
-    );
+    const latestBlockHash = await provider.connection.getLatestBlockhash();
+
+    await provider.connection.confirmTransaction({
+      blockhash: latestBlockHash.blockhash,
+      lastValidBlockHeight: latestBlockHash.lastValidBlockHeight,
+      signature: airdropSignature,
+    });
 
     console.log(`Airdropped 1 SOL to: ${user.toBase58()}`);
-    const topicName = "MyTestTopic";
+
+    // Get initial balance
+    const initialBalance = await provider.connection.getBalance(user);
 
     // Derive the PDA for the Topics account
     const [topicsPda] = await anchor.web3.PublicKey.findProgramAddress(
@@ -43,12 +48,31 @@ describe("solana_mq", () => {
       })
       .signers([userKeypair]) // Include the userKeypair in the signers
       .rpc();
-    console.log("Topic created successfully.");
 
-    const response = await program.account.topics.fetch(topicsPda);
+    let response = await program.account.topics.fetch(topicsPda);
     assert.ok(response.topics.length > 0, "No topics found.");
     assert.ok(response.topics.at(0) === topicName, "Topic name mismatch.");
+    console.log("Topic created successfully.");
 
-    console.log("Topics: ", response.topics);
+    let balanceAfterCreate = await provider.connection.getBalance(user);
+    let createCost = (initialBalance - balanceAfterCreate) / anchor.web3.LAMPORTS_PER_SOL;
+    console.log(`Cost of createTopic: ${createCost} SOL`);
+
+    // Call the removeTopic
+    await program.methods
+      .removeTopic(topicName)
+      .accounts({
+        user,
+      })
+      .signers([userKeypair]) // Sign with the userKeypair
+      .rpc();
+
+    response = await program.account.topics.fetch(topicsPda);
+    assert.ok(response.topics.length === 0, "Topic not removed.");
+    console.log("Topic removed successfully.");
+
+    let balanceAfterRemove = await provider.connection.getBalance(user);
+    let removeCost = (balanceAfterCreate - balanceAfterRemove) / anchor.web3.LAMPORTS_PER_SOL;
+    console.log(`Cost of removeTopic: ${removeCost} SOL`);
   });
 });

@@ -15,6 +15,23 @@ pub mod solana_mq {
         ctx.accounts.topics.topics.push(topic_name);
         Ok(())
     }
+
+    pub fn remove_topic(ctx: Context<RemoveTopic>, topic_name: String) -> Result<()> {
+        let user_pubkey = ctx.accounts.user.key();
+        msg!("Removing topic {} for user {}", topic_name, user_pubkey);
+
+        let mut topics = ctx.accounts.topics.topics.clone();
+        match topics.iter().position(|x| x == &topic_name) {
+            Some(index) => {
+                topics.remove(index);
+                ctx.accounts.topics.topics = topics;
+                Ok(())
+            }
+            None => {
+                return Err(ErrorCode::TopicNotFound.into());
+            }
+        }
+    }
 }
 
 #[account]
@@ -39,4 +56,24 @@ pub struct CreateTopic<'info> {
     pub topics: Account<'info, Topics>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct RemoveTopic<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"topics", user.key().as_ref()],
+        bump
+    )]
+    pub topics: Account<'info, Topics>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[error_code]
+pub enum ErrorCode {
+    TopicNotFound,
 }

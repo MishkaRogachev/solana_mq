@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 declare_id!("9tgFGPhuMsuXUUAWFNfuFEpBuANtjvwDdu9maFVFbLfo");
 
 const ANCHOR_DESCRIMINATOR_SIZE: usize = 8;
-const MAX_TOPICS: usize = 128;
+const MAX_TOPICS: usize = 32;
 const MAX_TOPIC_LENGTH: usize = 64;
 
 #[program]

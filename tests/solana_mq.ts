@@ -3,8 +3,8 @@ import { Program } from "@coral-xyz/anchor";
 import { SolanaMq } from "../target/types/solana_mq";
 import { assert } from "chai";
 
-async function airdrop(provider, user, lamports) {
-  const airdropSignature = await provider.connection.requestAirdrop(user, lamports);
+async function airdrop(provider: anchor.AnchorProvider, publicKey: anchor.web3.PublicKey, lamports: number) {
+  const airdropSignature = await provider.connection.requestAirdrop(publicKey, lamports);
   const latestBlockHash = await provider.connection.getLatestBlockhash();
 
   await provider.connection.confirmTransaction({
@@ -13,7 +13,65 @@ async function airdrop(provider, user, lamports) {
     signature: airdropSignature,
   });
 
-  console.log(`Airdropped ${lamports / anchor.web3.LAMPORTS_PER_SOL} SOL to: ${user.toBase58()}`);
+  let balance = await provider.connection.getBalance(publicKey);
+
+  console.log(`Airdropped ${lamports / anchor.web3.LAMPORTS_PER_SOL} SOL to: ${publicKey.toBase58()}. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+}
+
+async function initialise(provider: anchor.AnchorProvider, program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair) {
+  const user = userKeypair.publicKey;
+  await program.methods
+    .initialise()
+    .accounts({
+      user,
+    })
+    .signers([userKeypair])
+    .rpc();
+
+    let balance = await provider.connection.getBalance(userKeypair.publicKey);
+
+    console.log(`Topics account initialized. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+}
+
+async function deinitialise(provider: anchor.AnchorProvider, program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair) {
+  const user = userKeypair.publicKey;
+  await program.methods
+    .deinitialise()
+    .accounts({
+      user,
+    })
+    .signers([userKeypair])
+    .rpc();
+
+    let balance = await provider.connection.getBalance(userKeypair.publicKey);
+
+    console.log(`Topics account deinitialized. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+}
+
+async function createTopic(program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair, topic: string) {
+  const user = userKeypair.publicKey;
+  await program.methods
+    .createTopic(topic)
+    .accounts({
+      user,
+    })
+    .signers([userKeypair])
+    .rpc();
+
+  console.log(`Topic created: ${topic}`);
+}
+
+async function removeTopic(program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair, topic: string) {
+  const user = userKeypair.publicKey;
+  await program.methods
+    .removeTopic(topic)
+    .accounts({
+      user,
+    })
+    .signers([userKeypair])
+    .rpc();
+
+  console.log(`Topic removed: ${topic}`);
 }
 
 describe("solana_mq", () => {
@@ -24,102 +82,53 @@ describe("solana_mq", () => {
 
   it("Topic CRUD operations", async () => {
     const userKeypair = anchor.web3.Keypair.generate();
-    const user = userKeypair.publicKey;
-    const firstTopic = "/test_topic_1";
-    const secondTopic = "/test_topic_2";
+    const topics = Array.from({ length: 8 }, (_, i) => `/test_topic_${i + 1}`);
 
     // Airdrop!
-    await airdrop(provider, user, 1 * anchor.web3.LAMPORTS_PER_SOL);
-
-    // Check initial balance
-    let balance = await provider.connection.getBalance(user);
-    console.log(`Initial balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+    await airdrop(provider, userKeypair.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
 
     // Derive the PDA for the Topics account
     const [topicsPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("topics"), user.toBuffer()],
+      [Buffer.from("topics"), userKeypair.publicKey.toBuffer()],
       program.programId
     );
 
     // Initialize Topics account
-    await program.methods
-      .initialise()
-      .accounts({
-        user,
-      })
-      .signers([userKeypair])
-      .rpc();
-
-    console.log("Topics account initialized.");
-    balance = await provider.connection.getBalance(user);
-    console.log(`Balance after initialization: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
-
-    // Create first topic
-    await program.methods
-      .createTopic(firstTopic)
-      .accounts({
-        user,
-      })
-      .signers([userKeypair])
-      .rpc();
+    await initialise(provider, program, userKeypair);
 
     let response = await program.account.topics.fetch(topicsPda);
-    assert.strictEqual(response.topics.length, 1, "Should have 1 topic.");
-    assert.strictEqual(response.topics[0], firstTopic, "First topic mismatch.");
-    console.log("First topic created successfully.");
-
-    // Create second topic
-    await program.methods
-      .createTopic(secondTopic)
-      .accounts({
-        user,
-      })
-      .signers([userKeypair])
-      .rpc();
-
-    response = await program.account.topics.fetch(topicsPda);
-    assert.strictEqual(response.topics.length, 2, "Should have 2 topics.");
-    assert.strictEqual(response.topics[1], secondTopic, "Second topic mismatch.");
-    console.log("Second topic created successfully.");
-
-    // Remove first topic
-    await program.methods
-      .removeTopic(firstTopic)
-      .accounts({
-        user,
-      })
-      .signers([userKeypair])
-      .rpc();
-
-    response = await program.account.topics.fetch(topicsPda);
-    assert.strictEqual(response.topics.length, 1, "Should have 1 topic.");
-    assert.strictEqual(response.topics[0], secondTopic, "First topic mismatch.");
-    console.log("First topic removed successfully.");
-
-    // Remove second topic
-    await program.methods
-      .removeTopic(secondTopic)
-      .accounts({
-        user,
-      })
-      .signers([userKeypair])
-      .rpc();
-
-    response = await program.account.topics.fetch(topicsPda);
     assert.strictEqual(response.topics.length, 0, "Should have 0 topics.");
-    console.log("Second topic removed successfully.");
+
+    // Create all topics
+    for (const [i, topic] of topics.entries()) {
+      await createTopic(program, userKeypair, topic);
+
+      response = await program.account.topics.fetch(topicsPda);
+      assert.strictEqual(response.topics.length, i + 1, `Should have ${i + 1} topics.`);
+      assert.strictEqual(
+        response.topics[response.topics.length - 1],
+        topic,
+        `Latest topic mismatch after adding topic ${i + 1}.`
+      );
+    }
+
+    // Remove all topics one by one and validate after each removal
+    for (const [i, topic] of [...topics].reverse().entries()) {
+      await removeTopic(program, userKeypair, topic);
+
+      response = await program.account.topics.fetch(topicsPda);
+      const remainingTopics = topics.length - (i + 1);
+      assert.strictEqual(response.topics.length, remainingTopics, `Should have ${remainingTopics} topics.`);
+      if (remainingTopics > 0) {
+        assert.strictEqual(
+          response.topics[response.topics.length - 1],
+          topics[remainingTopics - 1],
+          `Latest topic mismatch after removing topic ${i + 1}.`
+        );
+      }
+    }
 
     // Cleanup
-    await program.methods
-      .deinitialise()
-      .accounts({
-        user,
-      })
-      .signers([userKeypair])
-      .rpc();
-
-    console.log("Topics account deinitialised.");
-    balance = await provider.connection.getBalance(user);
-    console.log(`Final balance after deinitialisation: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+    await deinitialise(provider, program, userKeypair);
   });
 });

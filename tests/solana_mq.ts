@@ -10,7 +10,23 @@ describe("solana_mq", () => {
   const program = anchor.workspace.SolanaMq as Program<SolanaMq>;
 
   it("Topic CRUD operations", async () => {
-    const user = provider.wallet.publicKey;
+    // Generate a random keypair for the user
+    const userKeypair = anchor.web3.Keypair.generate();
+    const user = userKeypair.publicKey;
+
+    // Airdrop SOL to the new user
+    const airdropSignature = await provider.connection.requestAirdrop(
+      user,
+      anchor.web3.LAMPORTS_PER_SOL // 1 SOL
+    );
+
+    // Confirm the airdrop using the new TransactionConfirmationStrategy
+    await provider.connection.confirmTransaction(
+      airdropSignature, // Pass the signature directly
+      "confirmed" // Specify the commitment level here
+    );
+
+    console.log(`Airdropped 1 SOL to: ${user.toBase58()}`);
     const topicName = "MyTestTopic";
 
     // Derive the PDA for the Topics account
@@ -25,6 +41,7 @@ describe("solana_mq", () => {
       .accounts({
         user,
       })
+      .signers([userKeypair]) // Include the userKeypair in the signers
       .rpc();
     console.log("Topic created successfully.");
 

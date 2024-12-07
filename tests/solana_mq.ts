@@ -1,7 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { SolanaMq } from "../target/types/solana_mq";
-import { assert } from "chai";
 
 async function airdrop(provider: anchor.AnchorProvider, publicKey: anchor.web3.PublicKey, lamports: number) {
   const airdropSignature = await provider.connection.requestAirdrop(publicKey, lamports);
@@ -30,7 +29,7 @@ async function initialise(provider: anchor.AnchorProvider, program: Program<Sola
 
     let balance = await provider.connection.getBalance(userKeypair.publicKey);
 
-    console.log(`Topics account initialized. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+    console.log(`Account initialized. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
 }
 
 async function deinitialise(provider: anchor.AnchorProvider, program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair) {
@@ -45,90 +44,68 @@ async function deinitialise(provider: anchor.AnchorProvider, program: Program<So
 
     let balance = await provider.connection.getBalance(userKeypair.publicKey);
 
-    console.log(`Topics account deinitialized. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+    console.log(`Account deinitialized. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
 }
 
-async function createTopic(program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair, topic: string) {
-  const user = userKeypair.publicKey;
+async function subscribeTopic(program: Program<SolanaMq>, subscriberKeypair: anchor.web3.Keypair, publisher: anchor.web3.PublicKey, topicName: string): Promise<void> {
+  const subscriber: anchor.web3.PublicKey = subscriberKeypair.publicKey;
+
   await program.methods
-    .createTopic(topic)
+    .subscribe(topicName)
     .accounts({
-      user,
+      subscriber,
+      publisher,
     })
-    .signers([userKeypair])
+    .signers([subscriberKeypair])
     .rpc();
 
-  console.log(`Topic created: ${topic}`);
+  console.log(`User ${subscriber.toBase58()} subscribed on ${publisher.toBase58()}:${topicName}`);
 }
 
-async function removeTopic(program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair, topic: string) {
-  const user = userKeypair.publicKey;
-  await program.methods
-    .removeTopic(topic)
-    .accounts({
-      user,
-    })
-    .signers([userKeypair])
-    .rpc();
+async function publishMessage(program: Program<SolanaMq>, publisherKeypair: anchor.web3.Keypair, topic: string, message: string) {
+  const publisher = publisherKeypair.publicKey;
+  console.log(`User ${publisher.toBase58()} publishing on topic '${topic}': ${message}`);
 
-  console.log(`Topic removed: ${topic}`);
+  await program.methods
+    .publish(topic, message)
+    .accounts({
+      publisher,
+    })
+    .signers([publisherKeypair])
+    .rpc();
+}
+
+async function listenForPublications(program: Program<SolanaMq>): Promise<number> {
+  const listener = program.addEventListener("publication", (event) => {
+    console.log(`User ${event.subscriber} received: '${event.message}' on topic '${event.topic}' from: ${event.publisher}, `);
+  });
+  return listener;
 }
 
 describe("solana_mq", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  const program = anchor.workspace.SolanaMq as Program<SolanaMq>;
+  const program = anchor.workspace.SolanaMq;
 
-  it("Topic CRUD operations", async () => {
-    const userKeypair = anchor.web3.Keypair.generate();
-    const topics = Array.from({ length: 8 }, (_, i) => `/test_topic_${i + 1}`);
+  it("Alice publishing to Bob", async () => {
+    const alice = anchor.web3.Keypair.generate();
+    const bob = anchor.web3.Keypair.generate();
 
-    // Airdrop!
-    await airdrop(provider, userKeypair.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
+    const topic = "/my_topic";
 
-    // Derive the PDA for the Topics account
-    const [topicsPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("topics"), userKeypair.publicKey.toBuffer()],
-      program.programId
-    );
+    await airdrop(provider, alice.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
+    await initialise(provider, program, alice);
+    await subscribeTopic(program, bob, alice.publicKey, topic);
 
-    // Initialize Topics account
-    await initialise(provider, program, userKeypair);
+    const listener = await listenForPublications(program);
 
-    let response = await program.account.topics.fetch(topicsPda);
-    assert.strictEqual(response.topics.length, 0, "Should have 0 topics.");
+    await publishMessage(program, alice, topic, "Hello, Bob!");
+    await publishMessage(program, alice, topic, "How are you doing?");
 
-    // Create all topics
-    for (const [i, topic] of topics.entries()) {
-      await createTopic(program, userKeypair, topic);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await program.removeEventListener(listener);
 
-      response = await program.account.topics.fetch(topicsPda);
-      assert.strictEqual(response.topics.length, i + 1, `Should have ${i + 1} topics.`);
-      assert.strictEqual(
-        response.topics[response.topics.length - 1],
-        topic,
-        `Latest topic mismatch after adding topic ${i + 1}.`
-      );
-    }
-
-    // Remove all topics one by one and validate after each removal
-    for (const [i, topic] of [...topics].reverse().entries()) {
-      await removeTopic(program, userKeypair, topic);
-
-      response = await program.account.topics.fetch(topicsPda);
-      const remainingTopics = topics.length - (i + 1);
-      assert.strictEqual(response.topics.length, remainingTopics, `Should have ${remainingTopics} topics.`);
-      if (remainingTopics > 0) {
-        assert.strictEqual(
-          response.topics[response.topics.length - 1],
-          topics[remainingTopics - 1],
-          `Latest topic mismatch after removing topic ${i + 1}.`
-        );
-      }
-    }
-
-    // Cleanup
-    await deinitialise(provider, program, userKeypair);
+    await deinitialise(provider, program, alice);
   });
 });

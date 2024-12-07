@@ -3,62 +3,86 @@ use anchor_lang::prelude::*;
 declare_id!("9tgFGPhuMsuXUUAWFNfuFEpBuANtjvwDdu9maFVFbLfo");
 
 const ANCHOR_DESCRIMINATOR_SIZE: usize = 8;
-const MAX_TOPICS: usize = 32;
-const MAX_TOPIC_LENGTH: usize = 64;
+const MAX_SUBSCRIPTIONS: usize = 256;
 
 #[program]
 pub mod solana_mq {
     use super::*;
 
     pub fn initialise(ctx: Context<Initialise>) -> Result<()> {
-        msg!("Initialising Topics account for user {}", ctx.accounts.user.key());
+        msg!("Initializing publisher account for {}", ctx.accounts.user.key());
+
+        let subscriptions = &mut ctx.accounts.subscriptions;
+        subscriptions.owner = ctx.accounts.user.key();
+        subscriptions.subscribers = Vec::new();
+
         Ok(())
     }
 
     pub fn deinitialise(ctx: Context<Deinitialise>) -> Result<()> {
-        msg!("Closing Topics account for user {}", ctx.accounts.user.key());
+        msg!("Closing publisher account for {}", ctx.accounts.user.key());
         Ok(())
     }
 
-    pub fn create_topic(ctx: Context<CreateTopic>, topic_name: String) -> Result<()> {
-        let user_pubkey = ctx.accounts.user.key();
-        msg!("Creating topic {} for user {}", topic_name, user_pubkey);
+    pub fn subscribe(ctx: Context<Subscribe>, topic_name: String) -> Result<()> {
+        let publisher_subscriptions = &mut ctx.accounts.subscriptions;
 
-        if topic_name.len() > MAX_TOPIC_LENGTH {
-            return Err(ErrorCode::TopicNameTooLong.into());
-        }
+        msg!(
+            "{} subscribing to topic '{}' of {}",
+            ctx.accounts.subscriber.key(),
+            topic_name,
+            publisher_subscriptions.owner
+        );
 
-        if ctx.accounts.topics.topics.len() >= MAX_TOPICS {
-            return Err(ErrorCode::TopicLimitReached.into());
-        }
-
-        if ctx.accounts.topics.topics.contains(&topic_name) {
-            return Err(ErrorCode::TopicAlreadyExists.into());
-        }
-
-        ctx.accounts.topics.topics.push(topic_name);
-        Ok(())
-    }
-
-    pub fn remove_topic(ctx: Context<RemoveTopic>, topic_name: String) -> Result<()> {
-        let user_pubkey = ctx.accounts.user.key();
-        msg!("Removing topic {} for user {}", topic_name, user_pubkey);
-
-        let topics = &mut ctx.accounts.topics.topics;
-        if let Some(index) = topics.iter().position(|p| p == &topic_name) {
-            topics.remove(index);
+        // Validate that the topic exists
+        if !publisher_subscriptions
+            .subscribers
+            .iter()
+            .any(|(_, topic)| topic == &topic_name)
+        {
+            publisher_subscriptions
+                .subscribers
+                .push((ctx.accounts.subscriber.key(), topic_name.clone()));
             Ok(())
         } else {
-            Err(ErrorCode::TopicNotFound.into())
+            Err(ErrorCode::TopicAlreadySubscribed.into())
         }
     }
+
+    pub fn publish(ctx: Context<Publish>, topic: String, message: String) -> Result<()> {
+        let publisher = ctx.accounts.publisher.key();
+        let subscriptions = &ctx.accounts.subscriptions.subscribers;
+
+        msg!("{} publishing '{}' to topic '{}'", publisher, message, topic);
+
+        for (subscriber, subscribed_topic) in subscriptions.iter() {
+            if subscribed_topic == &topic {
+                emit!(Publication {
+                    publisher,
+                    topic: topic.clone(),
+                    message: message.clone(),
+                    subscriber: *subscriber,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
 }
 
 #[account]
-#[derive(InitSpace)]
-pub struct Topics {
-    #[max_len(MAX_TOPICS, MAX_TOPIC_LENGTH)]
-    pub topics: Vec<String>,
+pub struct Subscriptions {
+    pub owner: Pubkey,
+    pub subscribers: Vec<(Pubkey, String)>
+}
+
+#[event]
+pub struct Publication {
+    pub publisher: Pubkey,
+    pub topic: String,
+    pub message: String,
+    pub subscriber: Pubkey,
 }
 
 #[derive(Accounts)]
@@ -69,11 +93,11 @@ pub struct Initialise<'info> {
     #[account(
         init,
         payer = user,
-        space = ANCHOR_DESCRIMINATOR_SIZE + Topics::INIT_SPACE,
-        seeds = [b"topics", user.key().as_ref()],
+        space = ANCHOR_DESCRIMINATOR_SIZE + 32 + (4 + 32 * MAX_SUBSCRIPTIONS), // Space for subscription map
+        seeds = [b"subscriptions", user.key().as_ref()],
         bump
     )]
-    pub topics: Account<'info, Topics>,
+    pub subscriptions: Account<'info, Subscriptions>,
 
     pub system_program: Program<'info, System>,
 }
@@ -85,43 +109,44 @@ pub struct Deinitialise<'info> {
 
     #[account(
         mut,
-        close = user, // Transfer remaining lamports to the user
-        seeds = [b"topics", user.key().as_ref()],
+        close = user, // Refund remaining lamports to the user
+        seeds = [b"subscriptions", user.key().as_ref()],
         bump
     )]
-    pub topics: Account<'info, Topics>,
+    pub subscriptions: Account<'info, Subscriptions>,
 }
 
 #[derive(Accounts)]
-pub struct CreateTopic<'info> {
-    pub user: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"topics", user.key().as_ref()],
-        bump
-    )]
-    pub topics: Account<'info, Topics>,
-}
-#[derive(Accounts)]
-pub struct RemoveTopic<'info> {
+pub struct Subscribe<'info> {
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub subscriber: Signer<'info>,
 
     #[account(
         mut,
-        seeds = [b"topics", user.key().as_ref()],
+        seeds = [b"subscriptions", publisher.key().as_ref()],
         bump
     )]
-    pub topics: Account<'info, Topics>,
+    pub subscriptions: Account<'info, Subscriptions>,
 
-    pub system_program: Program<'info, System>,
+    /// CHECK: The publisher account is not read or written to; it is used purely to derive the PDA for subscriptions.
+    pub publisher: AccountInfo<'info>,
+}
+
+#[derive(Accounts)]
+pub struct Publish<'info> {
+    #[account(mut)]
+    pub publisher: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [b"subscriptions", publisher.key().as_ref()],
+        bump
+    )]
+    pub subscriptions: Account<'info, Subscriptions>,
 }
 
 #[error_code]
 pub enum ErrorCode {
-    TopicNotFound,
-    TopicNameTooLong,
-    TopicAlreadyExists,
-    TopicLimitReached,
+    SubscriptionLimitReached,
+    TopicAlreadySubscribed,
 }

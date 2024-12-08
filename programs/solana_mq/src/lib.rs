@@ -2,7 +2,9 @@ use anchor_lang::prelude::*;
 
 declare_id!("9tgFGPhuMsuXUUAWFNfuFEpBuANtjvwDdu9maFVFbLfo");
 
-const MAX_SUBSCRIBERS: usize = 64;
+const ANCHOR_DESCRIMINATOR_SIZE: usize = 8;
+const PUB_KEY_SIZE: usize = 32;
+const TIMESTAMP_SIZE: usize = 8;
 
 #[program]
 pub mod solana_mq {
@@ -12,7 +14,6 @@ pub mod solana_mq {
         let hub = &mut ctx.accounts.hub;
         hub.owner = ctx.accounts.rent_payer.key();
         hub.created_at = Clock::get()?.unix_timestamp;
-        hub.subscribers = Vec::new();
 
         msg!("Hub created by {}", hub.owner);
         Ok(())
@@ -28,50 +29,13 @@ pub mod solana_mq {
         Ok(())
     }
 
-    pub fn subscribe(ctx: Context<Subscribe>, topic: String) -> Result<()> {
-        require!(topic.len() <= 64, ErrorCode::TopicNameTooLong);
-
-        let hub = &mut ctx.accounts.hub;
-        let subscriber = ctx.accounts.subscriber.key();
-
-        if hub
-            .subscribers
-            .iter()
-            .any(|(sub, sub_topic)| sub == &subscriber && sub_topic == &topic)
-        {
-            msg!("{} is already subscribed to topic '{}'", subscriber, topic);
-            return Ok(());
-        }
-
-        hub.subscribers.push((subscriber, topic.clone()));
-
-        msg!(
-            "{} subscribed to topic '{}' in hub {}",
-            subscriber,
-            topic,
-            ctx.accounts.hub.key()
-        );
-
-        Ok(())
-    }
-
     pub fn publish(ctx: Context<Publish>, topic: String, message: String) -> Result<()> {
-        require!(topic.len() <= 64, ErrorCode::TopicNameTooLong);
-        require!(message.len() <= 256, ErrorCode::MessageTooLong);
-
-        let hub = &ctx.accounts.hub;
-
-        for (subscriber, subscribed_topic) in &hub.subscribers {
-            if topic.starts_with(subscribed_topic) {
-                emit!(Publication {
-                    hub: ctx.accounts.hub.key(),
-                    publisher: ctx.accounts.publisher.key(),
-                    subscriber: *subscriber,
-                    topic: topic.clone(),
-                    message: message.clone(),
-                });
-            }
-        }
+        emit!(Publication {
+            hub: ctx.accounts.hub.key(),
+            publisher: ctx.accounts.publisher.key(),
+            topic: topic.clone(),
+            message: message.clone(),
+        });
 
         Ok(())
     }
@@ -79,9 +43,8 @@ pub mod solana_mq {
 
 #[account]
 pub struct Hub {
-    pub owner: Pubkey,                       // Owner of the hub
-    pub created_at: i64,                     // Timestamp when the hub was created
-    pub subscribers: Vec<(Pubkey, String)>,  // List of (subscriber, topic)
+    pub owner: Pubkey,                       // Owner of the hub, 32 bytes
+    pub created_at: i64,                     // Timestamp when the hub was created, 8 bytes
 }
 
 #[derive(Accounts)]
@@ -92,7 +55,7 @@ pub struct CreateHub<'info> {
     #[account(
         init,
         payer = rent_payer,
-        space = 8 + 32 + 8 + 4 + 32 * MAX_SUBSCRIBERS,
+        space = ANCHOR_DESCRIMINATOR_SIZE + PUB_KEY_SIZE + TIMESTAMP_SIZE,
         seeds = [b"hub", rent_payer.key().as_ref()],
         bump
     )]
@@ -116,19 +79,6 @@ pub struct CloseHub<'info> {
 }
 
 #[derive(Accounts)]
-pub struct Subscribe<'info> {
-    #[account(mut)]
-    pub subscriber: Signer<'info>,
-
-    #[account(
-        mut,
-        seeds = [b"hub", hub.owner.as_ref()],
-        bump
-    )]
-    pub hub: Account<'info, Hub>,
-}
-
-#[derive(Accounts)]
 pub struct Publish<'info> {
     #[account(mut)]
     pub publisher: Signer<'info>,
@@ -145,7 +95,6 @@ pub struct Publish<'info> {
 pub struct Publication {
     pub hub: Pubkey,
     pub publisher: Pubkey,
-    pub subscriber: Pubkey,
     pub topic: String,
     pub message: String,
 }

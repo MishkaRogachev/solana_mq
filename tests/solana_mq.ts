@@ -1,4 +1,5 @@
 import * as anchor from "@coral-xyz/anchor";
+import { assert } from "chai";
 
 async function airdrop(provider: anchor.AnchorProvider, publicKey: anchor.web3.PublicKey, lamports: number) {
   const airdropSignature = await provider.connection.requestAirdrop(publicKey, lamports);
@@ -19,95 +20,65 @@ describe("solana_mq", () => {
 
   const program = anchor.workspace.SolanaMq;
 
-  it("Alice creates a hub, Bob subscribes, and Alice publishes messages", async () => {
-    const alice = anchor.web3.Keypair.generate();
-    const bob = anchor.web3.Keypair.generate();
+  it("User creates a hub & publishes a message", async () => {
+    const user = anchor.web3.Keypair.generate();
+    const topic = "/test_topic";
+    const message = "Hello, World!";
 
-    const topic = "/topic_1";
-
-    await airdrop(provider, alice.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
-    await airdrop(provider, bob.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
+    await airdrop(provider, user.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
 
     const [hubKey] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("hub"), alice.publicKey.toBuffer()],
+      [Buffer.from("hub"), user.publicKey.toBuffer()],
       program.programId
     );
 
     await program.methods
       .createHub()
-      .accounts({ rentPayer: alice.publicKey })
-      .signers([alice])
+      .accounts({ rentPayer: user.publicKey })
+      .signers([user])
       .rpc();
 
-    await program.methods
-      .subscribe(topic)
-      .accounts({ subscriber: bob.publicKey, hub: hubKey })
-      .signers([bob])
-      .rpc();
+    // Check balance after hub creation
+    let balance = await provider.connection.getBalance(user.publicKey);
+    console.log(`Hub crated, balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
 
+    // Verify hub fields
+    const hubAccount = await program.account.hub.fetch(hubKey);
+    assert.strictEqual(hubAccount.owner.toBase58(), user.publicKey.toBase58(), "Hub owner mismatch");
+
+    const createdAt = hubAccount.createdAt.toNumber(); // Convert BN to number
+    assert.isNumber(createdAt, "Hub creation timestamp is not a number");
+    assert.isAbove(createdAt, 0, "Hub creation timestamp should be greater than zero");
+
+    // Set up event listener
     const listener = program.addEventListener("publication", (event: any) => {
-      console.log(`Subscriber ${event.subscriber} received: '${event.message}' on topic '${event.topic}'`);
+      assert.strictEqual(event.hub.toBase58(), hubKey.toBase58(), "Event hub mismatch");
+      assert.strictEqual(event.publisher.toBase58(), user.publicKey.toBase58(), "Event publisher mismatch");
+      assert.strictEqual(event.topic, topic, "Event topic mismatch");
+      assert.strictEqual(event.message, message, "Event message mismatch");
+      console.log(`Published: '${event.message}' on topic '${event.topic}'`);
     });
 
-    console.log("Alice publishes a message");
+    // Publish a valid message
     await program.methods
-      .publish(topic, "Hello, Bob!")
-      .accounts({ publisher: alice.publicKey, hub: hubKey })
-      .signers([alice])
+      .publish(topic, message)
+      .accounts({ publisher: user.publicKey, hub: hubKey })
+      .signers([user])
       .rpc();
 
-    await program.removeEventListener(listener);
-
-    await program.methods
-      .closeHub()
-      .accounts({ rentPayer: alice.publicKey })
-      .signers([alice])
-      .rpc();
-  });
-
-  it("Alice creates a hub, Alice subscribes, and Bob publishes messages", async () => {
-    const alice = anchor.web3.Keypair.generate();
-    const bob = anchor.web3.Keypair.generate();
-
-    const topic = "/topic_2";
-
-    await airdrop(provider, alice.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
-    await airdrop(provider, bob.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
-
-    const [hubKey] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("hub"), alice.publicKey.toBuffer()],
-      program.programId
-    );
-
-    await program.methods
-      .createHub()
-      .accounts({ rentPayer: alice.publicKey })
-      .signers([alice])
-      .rpc();
-
-    await program.methods
-      .subscribe(topic)
-      .accounts({ subscriber: alice.publicKey, hub: hubKey })
-      .signers([alice])
-      .rpc();
-
-    const listener = program.addEventListener("publication", (event: any) => {
-      console.log(`Subscriber ${event.subscriber} received: '${event.message}' on topic '${event.topic}'`);
-    });
-
-    console.log("Bob publishes a message");
-    await program.methods
-      .publish(topic, "Hello, Alice!")
-      .accounts({ publisher: bob.publicKey, hub: hubKey })
-      .signers([bob])
-      .rpc();
-
-    await program.removeEventListener(listener);
-
+    // Close the hub
     await program.methods
       .closeHub()
-      .accounts({ rentPayer: alice.publicKey })
-      .signers([alice])
+      .accounts({ rentPayer: user.publicKey })
+      .signers([user])
       .rpc();
+
+    let refunded_balance = await provider.connection.getBalance(user.publicKey);
+    let refunded = refunded_balance - balance;
+    console.log(`Hub closed, refunded: ${(refunded) / anchor.web3.LAMPORTS_PER_SOL} SOL`);
+
+    assert.ok(refunded > 0);
+
+    await program.removeEventListener(listener);
   });
 });

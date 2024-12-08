@@ -32,6 +32,11 @@ describe("solana_mq", () => {
       program.programId
     );
 
+    const [accessToken] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("access_token"), hubKey.toBuffer()],
+      program.programId
+    );
+
     await program.methods
       .createHub()
       .accounts({ rentPayer: user.publicKey })
@@ -62,7 +67,7 @@ describe("solana_mq", () => {
     // Publish a valid message
     await program.methods
       .publish(topic, message)
-      .accounts({ publisher: user.publicKey, hub: hubKey })
+      .accounts({ publisher: user.publicKey, hub: hubKey, accessToken })
       .signers([user])
       .rpc();
 

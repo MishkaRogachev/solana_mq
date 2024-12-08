@@ -1,6 +1,4 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
-import { SolanaMq } from "../target/types/solana_mq";
 
 async function airdrop(provider: anchor.AnchorProvider, publicKey: anchor.web3.PublicKey, lamports: number) {
   const airdropSignature = await provider.connection.requestAirdrop(publicKey, lamports);
@@ -12,74 +10,7 @@ async function airdrop(provider: anchor.AnchorProvider, publicKey: anchor.web3.P
     signature: airdropSignature,
   });
 
-  let balance = await provider.connection.getBalance(publicKey);
-
-  console.log(`Airdropped ${lamports / anchor.web3.LAMPORTS_PER_SOL} SOL to: ${publicKey.toBase58()}. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
-}
-
-async function initialise(provider: anchor.AnchorProvider, program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair) {
-  const user = userKeypair.publicKey;
-  await program.methods
-    .initialise()
-    .accounts({
-      user,
-    })
-    .signers([userKeypair])
-    .rpc();
-
-    let balance = await provider.connection.getBalance(userKeypair.publicKey);
-
-    console.log(`Account initialized. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
-}
-
-async function deinitialise(provider: anchor.AnchorProvider, program: Program<SolanaMq>, userKeypair: anchor.web3.Keypair) {
-  const user = userKeypair.publicKey;
-  await program.methods
-    .deinitialise()
-    .accounts({
-      user,
-    })
-    .signers([userKeypair])
-    .rpc();
-
-    let balance = await provider.connection.getBalance(userKeypair.publicKey);
-
-    console.log(`Account deinitialized. Balance: ${balance / anchor.web3.LAMPORTS_PER_SOL} SOL`);
-}
-
-async function subscribeTopic(program: Program<SolanaMq>, subscriberKeypair: anchor.web3.Keypair, publisher: anchor.web3.PublicKey, topicName: string): Promise<void> {
-  const subscriber: anchor.web3.PublicKey = subscriberKeypair.publicKey;
-
-  await program.methods
-    .subscribe(topicName)
-    .accounts({
-      subscriber,
-      publisher,
-    })
-    .signers([subscriberKeypair])
-    .rpc();
-
-  console.log(`User ${subscriber.toBase58()} subscribed on ${publisher.toBase58()}:${topicName}`);
-}
-
-async function publishMessage(program: Program<SolanaMq>, publisherKeypair: anchor.web3.Keypair, topic: string, message: string) {
-  const publisher = publisherKeypair.publicKey;
-  console.log(`User ${publisher.toBase58()} publishing on topic '${topic}': ${message}`);
-
-  await program.methods
-    .publish(topic, message)
-    .accounts({
-      publisher,
-    })
-    .signers([publisherKeypair])
-    .rpc();
-}
-
-async function listenForPublications(program: Program<SolanaMq>): Promise<number> {
-  const listener = program.addEventListener("publication", (event) => {
-    console.log(`User ${event.subscriber} received: '${event.message}' on topic '${event.topic}' from: ${event.publisher}, `);
-  });
-  return listener;
+  console.log(`Airdropped ${lamports / anchor.web3.LAMPORTS_PER_SOL} SOL to: ${publicKey.toBase58()}`);
 }
 
 describe("solana_mq", () => {
@@ -88,24 +19,95 @@ describe("solana_mq", () => {
 
   const program = anchor.workspace.SolanaMq;
 
-  it("Alice publishing to Bob", async () => {
+  it("Alice creates a hub, Bob subscribes, and Alice publishes messages", async () => {
     const alice = anchor.web3.Keypair.generate();
     const bob = anchor.web3.Keypair.generate();
 
-    const topic = "/my_topic";
+    const topic = "/topic_1";
 
-    await airdrop(provider, alice.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
-    await initialise(provider, program, alice);
-    await subscribeTopic(program, bob, alice.publicKey, topic);
+    await airdrop(provider, alice.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
+    await airdrop(provider, bob.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
 
-    const listener = await listenForPublications(program);
+    const [hubKey] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("hub"), alice.publicKey.toBuffer()],
+      program.programId
+    );
 
-    await publishMessage(program, alice, topic, "Hello, Bob!");
-    await publishMessage(program, alice, topic, "How are you doing?");
+    await program.methods
+      .createHub()
+      .accounts({ rentPayer: alice.publicKey })
+      .signers([alice])
+      .rpc();
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await program.methods
+      .subscribe(topic)
+      .accounts({ subscriber: bob.publicKey, hub: hubKey })
+      .signers([bob])
+      .rpc();
+
+    const listener = program.addEventListener("publication", (event: any) => {
+      console.log(`Subscriber ${event.subscriber} received: '${event.message}' on topic '${event.topic}'`);
+    });
+
+    console.log("Alice publishes a message");
+    await program.methods
+      .publish(topic, "Hello, Bob!")
+      .accounts({ publisher: alice.publicKey, hub: hubKey })
+      .signers([alice])
+      .rpc();
+
     await program.removeEventListener(listener);
 
-    await deinitialise(provider, program, alice);
+    await program.methods
+      .closeHub()
+      .accounts({ rentPayer: alice.publicKey })
+      .signers([alice])
+      .rpc();
+  });
+
+  it("Alice creates a hub, Alice subscribes, and Bob publishes messages", async () => {
+    const alice = anchor.web3.Keypair.generate();
+    const bob = anchor.web3.Keypair.generate();
+
+    const topic = "/topic_2";
+
+    await airdrop(provider, alice.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
+    await airdrop(provider, bob.publicKey, 1 * anchor.web3.LAMPORTS_PER_SOL);
+
+    const [hubKey] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("hub"), alice.publicKey.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .createHub()
+      .accounts({ rentPayer: alice.publicKey })
+      .signers([alice])
+      .rpc();
+
+    await program.methods
+      .subscribe(topic)
+      .accounts({ subscriber: alice.publicKey, hub: hubKey })
+      .signers([alice])
+      .rpc();
+
+    const listener = program.addEventListener("publication", (event: any) => {
+      console.log(`Subscriber ${event.subscriber} received: '${event.message}' on topic '${event.topic}'`);
+    });
+
+    console.log("Bob publishes a message");
+    await program.methods
+      .publish(topic, "Hello, Alice!")
+      .accounts({ publisher: bob.publicKey, hub: hubKey })
+      .signers([bob])
+      .rpc();
+
+    await program.removeEventListener(listener);
+
+    await program.methods
+      .closeHub()
+      .accounts({ rentPayer: alice.publicKey })
+      .signers([alice])
+      .rpc();
   });
 });
